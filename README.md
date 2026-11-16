@@ -388,7 +388,7 @@ EXPLAIN SELECT ...;        -- see the execution plan
 |---|---|
 | **A**tomic | All-or-nothing |
 | **C**onsistent | All rules satisfied at commit |
-| **I**solated | Concurrent txns appear independent |
+| **I**solated | Rules for what concurrent transactions may observe; the precise guarantee depends on the isolation level |
 | **D**urable | Committed changes survive crashes |
  
 | Read anomaly | Description |
@@ -401,8 +401,10 @@ EXPLAIN SELECT ...;        -- see the execution plan
 |---|---|---|---|
 | `READ UNCOMMITTED` | ✓ | ✓ | ✓ |
 | `READ COMMITTED` | ✗ | ✓ | ✓ |
-| `REPEATABLE READ` | ✗ | ✗ | ✓ |
+| `REPEATABLE READ` | ✗ | ✗ | ✓* |
 | `SERIALIZABLE` | ✗ | ✗ | ✗ |
+
+*The table summarizes the SQL standard's minimum phenomena guarantees, not every vendor's behavior. PostgreSQL's `REPEATABLE READ` additionally prevents phantom reads, while serializability also addresses anomalies such as write skew. Check the [PostgreSQL documentation](https://www.postgresql.org/docs/current/transaction-iso.html) and [MySQL InnoDB documentation](https://dev.mysql.com/doc/refman/8.4/en/innodb-transaction-isolation-levels.html) for implementation-specific behavior.*
  
 ```sql
 SET TRANSACTION ISOLATION LEVEL SERIALIZABLE;
@@ -427,7 +429,7 @@ COMMIT;                  -- or ROLLBACK
 - **Rigorous 2PL** holds *both* S and X locks until commit/rollback.
 **Deadlock prevention/resolution:** aggressive locking, data ordering, timeout, cycle detection.
  
-**Snapshot isolation:** each txn sees a private snapshot of data; conflicts detected at commit.
+**Snapshot isolation:** a transaction reads from a logically consistent database snapshot (not a physical copy). Concurrent writers may still contend; write-write conflicts are handled by the database. Snapshot isolation is not equivalent to serializability; write skew remains possible.
  
 ---
  
@@ -438,7 +440,7 @@ COMMIT;                  -- or ROLLBACK
 **Recovery from system failure:**
 1. **Redo** all transactions committed since last checkpoint.
 2. **Undo** transactions that never committed.
-**Backups:** *cold* (database paused, full copy) vs *hot* (synchronized secondary, no downtime).
+**Backups:** *cold* backups are taken when the database is stopped/quiescent; *hot* backups are taken while the system remains online using an engine-compatible backup mechanism. **Replication is not a substitute for backups**, because unwanted changes may propagate to replicas.
  
 ---
  
@@ -450,7 +452,7 @@ COMMIT;                  -- or ROLLBACK
 | **Multi-tier / Web** | UI tier → app tier → DB tier |
 | **Cloud DB (PaaS)** | DB delivered over the internet |
 | **Parallel DB** | Multi-CPU on one box (shared memory / storage / nothing) |
-| **Distributed DB** | Multiple computers over WAN |
+| **Distributed DB** | Data or processing spread across networked computers (LAN and/or WAN) |
 | **Replicated DB** | Multiple copies (primary/secondary or group replication) |
 | **Federated DB** | Middleware over autonomous heterogeneous DBs |
 | **In-memory DB** | RAM-resident |
@@ -458,9 +460,9 @@ COMMIT;                  -- or ROLLBACK
 | **Data warehouse** | Analytics-optimized DB; star schema (fact + dimension tables) |
 | **Data lake** | Raw, unprocessed data store for analytics |
  
-**CAP theorem:** A distributed DB can guarantee at most 2 of: **C**onsistency, **A**vailability, **P**artition-tolerance.
+**CAP theorem:** During a network partition, a distributed data service cannot guarantee both linearizable consistency and availability of every request, under the formal model. It is **not** a choose-any-two configuration switch. [Gilbert and Lynch (2002)](https://doi.org/10.1145/564585.564601).
  
-**Two-phase commit (distributed transaction):** prepare → commit phases coordinated by a transaction coordinator.
+**Two-phase commit (2PC):** a *specific coordination protocol* for participating transaction managers: prepare, then commit/abort. It is not automatic for every distributed request and does not roll back arbitrary third-party API calls.
  
 **Cloud service tiers:** IaaS (raw infra) → PaaS (managed services) → SaaS (full apps).
  
@@ -864,18 +866,20 @@ An **index** is a sorted auxiliary data structure that maps column values to row
  
 ## 9. Transactions and ACID
  
-A transaction is a group of database changes that either *all* happen or *none* happen, like a bank transfer where you can't have the money leave your account without arriving in the recipient's. ACID is the four-letter promise that databases make about transactions: the changes are **A**ll-or-nothing, the database stays **C**onsistent (no rules broken), concurrent transactions don't trample each other (**I**solation), and once committed, the changes survive crashes (**D**urable). These properties are the reason banks, payment systems, ticketing platforms, and inventory systems can be trusted not to lose your money or double-sell the last concert ticket.
+A **database transaction** groups operations managed by the same transactional system into one commit/rollback boundary. **Atomicity applies within that boundary**, not automatically to external payment APIs, notification services, or independently managed databases. ACID summarizes atomicity, consistency, isolation, and durability; application invariants still need deliberate schema and transaction design.
  
-A **transaction** is a sequence of operations that must commit (succeed) or rollback (fail) as a *single unit*. The canonical example is a bank transfer: debit account A *and* credit account B, never one without the other.
+A **local transaction** is a group of database changes committed or rolled back together. For example, debiting one account and crediting another within the *same transactional database* can be one atomic unit. A transfer across independent institutions or services is a different problem requiring coordination and recovery.
  
 ACID:
 - **Atomic.** All or none.
-- **Consistent.** No rule violations at commit.
-- **Isolated.** Concurrent transactions don't see each other's intermediate state.
+- **Consistent.** A transaction moves the database between states satisfying the constraints and invariants that are actually enforced. It cannot guarantee unspecified business rules.
+- **Isolated.** Concurrent operations follow the selected isolation level. Weaker levels can permit certain anomalies; serializable isolation is the strongest standard guarantee.
 - **Durable.** Committed data survives crashes.
-**Metaphor: a wedding ceremony.** The vows, the rings, the kiss all happen atomically. If anything goes wrong before "I do", the ceremony is rolled back. Once "I do" is said, even an earthquake can't undo it (durable).
+**Boundary reminder:** An ACID database transaction is not a universal undo button. An external email, shipment, or payment cannot be reversed merely by issuing `ROLLBACK` in the database.
  
-**Real-world scenario.** When you book an Uber, the transaction has multiple steps: charge your card, decrement the driver's available status, create a trip record, send notifications. ACID ensures you're never charged without getting a driver, and a driver is never marked "busy" without a real trip attached. If the payment processor hiccups halfway through, the entire transaction rolls back and you see "Payment failed, please try again" rather than waiting confused for a phantom driver while your card is debited.
+**Illustrative ride-booking scenario (not a claim about any company's internal design).** A service reserves a driver, records a trip, requests payment through a separate processor, and sends a notification. A database transaction can atomically change *its own* reservation and trip rows, but cannot undo an external charge or delivered message. Such systems can use idempotency keys, durable messaging/outbox patterns, and orchestrated retries or compensating operations (often called a **saga**). Compensation is a new action, not a database rollback; some external effects are irreversible. See [Microsoft's saga pattern](https://learn.microsoft.com/en-us/azure/architecture/patterns/saga).
+
+**Try it yourself:** [Run a local transaction-boundary demonstration](examples/transaction_boundary_demo.py) using Python's built-in SQLite module. It shows a successful local rollback alongside a simulated external action that remains performed.
  
 ### Read anomalies, what isolation prevents
  
@@ -890,8 +894,10 @@ ACID:
 |---|---|---|---|
 | `READ UNCOMMITTED` | possible | possible | possible |
 | `READ COMMITTED` | safe | possible | possible |
-| `REPEATABLE READ` (MySQL default) | safe | safe | possible |
+| `REPEATABLE READ` (MySQL InnoDB default) | safe | safe | vendor-dependent* |
 | `SERIALIZABLE` | safe | safe | safe |
+
+*This is a compact description of selected phenomena, not a guarantee against every possible concurrency anomaly. PostgreSQL defaults to `READ COMMITTED`; InnoDB defaults to `REPEATABLE READ`. PostgreSQL's `REPEATABLE READ` implementation prevents phantoms but still permits serialization anomalies (such as write skew). References: [PostgreSQL](https://www.postgresql.org/docs/current/transaction-iso.html), [MySQL InnoDB](https://dev.mysql.com/doc/refman/8.4/en/innodb-transaction-isolation-levels.html).*
  
 Higher isolation means stronger correctness guarantees but more lock contention and lower throughput. Most apps run at READ COMMITTED or REPEATABLE READ. SERIALIZABLE is the gold standard for correctness-critical code.
  
@@ -905,7 +911,7 @@ A **schedule** is the interleaving of operations from concurrent transactions. T
  
 ## 10. Concurrency Control — Locks and Snapshots
  
-When 1,000 people try to buy the last 10 tickets at the same instant, how does the database avoid selling the same ticket to 7 of them? The answer is concurrency control. The database briefly "locks" rows that one transaction is touching, forcing others to wait their turn, like a single-occupancy bathroom stall. Modern databases also have an alternative called snapshot isolation. Each transaction works on its own private copy of the data and only checks for conflicts at the end, like everyone editing their own copy of a Google Doc that's then merged. Concurrency control is what makes ticketing platforms, flash sales, and bidding systems trustworthy.
+When many customers attempt to reserve the same few seats, the database must prevent conflicting sales. Locks, multiversion concurrency control (MVCC), constraints and application-level retries can work together. Snapshot-based reads are *not* independent writable copies of all data; the system may still lock, wait, or abort conflicting transactions depending on isolation level and engine.
  
 ### Two-phase locking (2PL)
  
@@ -930,11 +936,11 @@ When two transactions each hold a lock the other needs, neither can proceed. Str
  
 ### Snapshot isolation, optimistic concurrency
  
-Instead of locks, give each transaction a *private snapshot* of the database at its start time. Concurrent writers don't block each other. Conflicts are detected at commit time. Most modern databases (PostgreSQL, Oracle) use snapshot isolation by default.
+In **snapshot isolation**, reads observe a logically consistent snapshot; they do not create separate private physical databases. Competing updates may still wait or abort, so snapshot isolation is not simply 'locks versus copies.' PostgreSQL defaults to **Read Committed**, where successive statements can see different committed states; its **Repeatable Read** uses a transaction-level snapshot. MySQL InnoDB defaults to **Repeatable Read**, with its own locking-read behavior. See the [PostgreSQL](https://www.postgresql.org/docs/current/transaction-iso.html) and [InnoDB](https://dev.mysql.com/doc/refman/8.4/en/innodb-transaction-isolation-levels.html) manuals.
  
 **Trade-off:** snapshot isolation alone *isn't* serializable (it allows write skew). True serializable behavior requires *Serializable Snapshot Isolation* (SSI), which adds conflict detection on top.
  
-**Real-world scenario.** Google Docs feels like it uses something snapshot-like. You and your collaborator type at the same time, each on your own version, and the server merges your edits. PostgreSQL works similarly: each long-running analytic query can run on its own consistent snapshot of the database without blocking customer writes. The reporting team gets stable numbers; the customers experience no slowdown. Compare to the lock-based world where a long report could block all writes for minutes.
+**Example: reporting workloads.** Under PostgreSQL's `REPEATABLE READ` level, a transaction may run multiple consistent reads against the same snapshot while concurrent updates proceed, though resource usage and conflicting operations still need to be considered. This is not the same mechanism as a collaborative text editor, and not PostgreSQL's default `READ COMMITTED` behavior.
  
 ---
  
@@ -968,39 +974,39 @@ This is called **ARIES recovery** (Algorithm for Recovery and Isolation Exploiti
  
 ## 12. Distributed Databases and CAP
  
-When a database grows beyond what a single computer can handle (in storage, requests per second, or geographic reach), you spread the data across many computers. That's powerful but introduces a hard truth called the CAP theorem. When computers can't talk to each other across the network (a "partition"), you have to choose between giving stale answers (sacrificing **C**onsistency) or refusing to answer at all (sacrificing **A**vailability). You can't have both. This trade-off shapes the architecture of every globally-scaled product you use, from Instagram to your bank's mobile app.
+Distributed data systems spread storage or computation across multiple nodes and must consider how requests behave when communication between nodes is disrupted. Under the [Gilbert–Lynch CAP formulation](https://doi.org/10.1145/564585.564601), a network partition prevents a service from preserving both **linearizable consistency** and **availability for every request**. CAP does not say that distributed systems permanently select two of three independent features; outside partitions, other latency, consistency and operational trade-offs still matter.
  
 When data outgrows one machine, you have options:
  
 - **Parallel database.** Multiple processors, one machine (shared memory / shared storage / shared nothing).
 - **Cluster.** Multiple machines on a LAN, coordinated.
-- **Distributed database.** Multiple machines on a WAN.
+- **Distributed database.** Data stored or processed on multiple networked machines, over a LAN, WAN, or both.
 - **Replicated database.** Copies of the data on multiple machines.
-**Real-world scenario.** Uber operates in over 70 countries. Their dispatch database can't live in one data center. It'd be too slow for drivers in Singapore to query a database in Virginia, and a single outage would shut down the world. Instead, Uber distributes data: each region has its own primary, replicating to others asynchronously. When you book a ride, the local cluster handles it. When Uber HQ wants global analytics, they aggregate across regions overnight.
+**Hypothetical regional dispatch design:** A ride-booking platform could partition requests by geography and replicate trip data among regions. Choosing which data remains local and which becomes globally visible involves latency, replication lag, consistency requirements and failure handling. This is an example architecture, **not a claim about Uber's internal databases**.
  
 ### Two-phase commit (distributed transactions)
  
-When a transaction touches multiple nodes, a **transaction coordinator** runs a two-phase protocol:
+**If participating transactional resource managers support two-phase commit (2PC)**, a coordinator can use the following protocol to reach a common commit/abort decision. This protocol does not automatically apply to ordinary HTTP requests, arbitrary message queues or independent third-party payment services:
  
 1. **Phase 1 (Prepare):** coordinator asks all nodes "can you commit?" Each node persists the change to its log and replies yes/no.
 2. **Phase 2 (Commit/Abort):** if everyone said yes, coordinator says "commit"; otherwise "abort." Each node finalizes.
-The cost: a coordinator failure mid-protocol can leave nodes blocked. This is why distributed transactions are expensive and many systems prefer **eventual consistency** instead.
+Classic 2PC can block if the coordinator fails at a critical point; it also adds coordination costs. Other approaches, such as sagas, use local transactions and compensating operations. A saga is **not equivalent** to one atomic ACID transaction across services. [Microsoft saga reference](https://learn.microsoft.com/en-us/azure/architecture/patterns/saga).
  
 ### Replication strategies
  
 - **Primary/secondary.** One writer, many readers. Updates flow primary to secondaries.
-- **Group replication.** Any node can take writes; conflicts resolved at commit.
-Updates are **synchronous** (all replicas in one transaction) or **asynchronous** (apply locally, propagate after).
+- **Group replication.** Multiple nodes coordinate replicated state; whether one or several members accept writes depends on the topology and database product.
+Replication may be **synchronous or quorum-coordinated** (acknowledgements from specified replicas before success) or **asynchronous** (updates propagate later). These choices vary by database and configuration; there is no universal all-replicas-in-one-transaction rule.
  
 ### CAP theorem
  
-In a network partition (some nodes can't reach others), a distributed system can preserve at most **two** of:
-- **Consistency.** Every read sees the latest write.
-- **Availability.** Every request gets a response.
-- **Partition-tolerance.** The system keeps running despite dropped messages.
-**The forced choice.** Because partitions *will* happen in any real distributed system, you really pick between Consistency and Availability when partitioned. CP systems (e.g. classical relational with 2PC) refuse to serve stale reads. AP systems (e.g. Cassandra, Dynamo) keep serving but may return stale data. **Eventual consistency** is the AP relaxation: replicas converge eventually if updates stop.
+For a distributed service experiencing a partition, the formal CAP result rules out simultaneously guaranteeing **linearizable consistency** and **availability for all requests** in the presence of arbitrary communication loss. The terms are specific:
+- **Consistency (CAP).** Linearizability: operations appear to occur atomically in an order respecting real-time precedence. This is **different** from constraint consistency in ACID.
+- **Availability (CAP).** Every request reaching a non-failing node eventually receives a successful, non-error response, in the theorem's model.
+- **Partition.** Network failures can prevent nodes from exchanging messages; one cannot make the partition disappear by configuration.
+**Design consequence:** During a partition, a system that refuses operations it cannot safely linearize sacrifices availability for those requests; one that continues responding locally may sacrifice linearizability. Labels such as CP/AP are oversimplifications of implementation-specific read/write policies. Even an eventually consistent system still needs a precise convergence and failure model. [Original proof: Gilbert and Lynch, 2002](https://doi.org/10.1145/564585.564601).
  
-**Real-world scenario.** Picture a worldwide game like Fortnite. The leaderboard is an AP system: if a network partition splits North America from Europe for 30 seconds, both regions keep showing slightly stale scores rather than refusing to serve the leaderboard at all. Players don't notice the brief inconsistency, and the lists reconcile within seconds. Compare to a banking system, which is CP: during a partition, the bank refuses to authorize a withdrawal in Tokyo if it can't confirm with the home server in New York that you didn't already withdraw your last $1,000 in London. Better to delay than to risk a double-spend.
+**Hypothetical examples:** A global game's leaderboard might choose to continue serving temporarily stale regional views during a partition; a financial ledger may instead reject or delay operations that cannot be safely validated. Real systems can have different consistency policies per operation. These are illustrative designs, not claims about particular companies.
  
 ### Cloud database tiers
  
@@ -1118,7 +1124,7 @@ The killer feature is **index-free adjacency**: each vertex stores direct pointe
  
 - **Vertical (scale up).** Bigger machine. Capped by hardware limits.
 - **Horizontal (scale out).** More machines. Requires sharding/replication. The NoSQL value proposition.
-NoSQL gives up some relational guarantees (joins, ACID across documents) in exchange for horizontal scale and schema flexibility.
+NoSQL is a broad label, **not a guarantee that transactions or consistency are absent**. Capabilities depend on the product and data model: for example, [MongoDB supports multi-document ACID transactions](https://www.mongodb.com/docs/manual/core/transactions/). Evaluate joins, transaction scopes, isolation, query patterns and scaling trade-offs for each system.
  
 ---
  
@@ -1221,7 +1227,7 @@ An **object-relational mapping** library (SQLAlchemy, Django ORM, Hibernate, Ent
  
 **Candidate key:** Any column or column-set that is unique and minimal; the PK is one chosen candidate.
  
-**CAP theorem:** A distributed system can guarantee at most two of Consistency, Availability, Partition-tolerance.
+**CAP theorem:** During a network partition, a distributed service cannot guarantee both linearizable consistency and availability of every request in the Gilbert–Lynch model; this is not a general 'pick two' feature menu.
  
 **Cardinality:** Min/max counts in an ER relationship.
  
@@ -1255,7 +1261,7 @@ An **object-relational mapping** library (SQLAlchemy, Django ORM, Hibernate, Ent
  
 **Consistency (in ACID):** All rules valid at commit.
  
-**Consistency (in CAP):** Every read sees the latest write.
+**Consistency (in CAP):** Linearizability, an operation ordering respecting real-time precedence; unlike ACID's constraint consistency.
  
 **Constraint:** A rule the database enforces (NOT NULL, UNIQUE, PK, FK, CHECK).
  
@@ -1599,7 +1605,7 @@ An **object-relational mapping** library (SQLAlchemy, Django ORM, Hibernate, Ent
  
 **Single-level index:** Flat index of (value → pointer).
  
-**Snapshot isolation:** Each transaction sees a private copy.
+**Snapshot isolation:** Transactions read a logically consistent snapshot; it is not a private physical copy or a guarantee of serializable outcomes.
  
 **Sorted table:** Rows physically ordered by sort column.
  
@@ -1773,9 +1779,17 @@ An **object-relational mapping** library (SQLAlchemy, Django ORM, Hibernate, Ent
  
 - Codd, **"A Relational Model of Data for Large Shared Data Banks"** (1970). The founding paper. https://www.seas.upenn.edu/~zives/03f/cis550/codd.pdf
 - Stonebraker & Hellerstein, **"What Goes Around Comes Around":** history and recurring patterns.
-- Brewer, **CAP Theorem:** original formulation.
+- Gilbert & Lynch (2002), **'Brewer's Conjecture and the Feasibility of Consistent, Available, Partition-Tolerant Web Services'**. [Original theorem proof](https://doi.org/10.1145/564585.564601).
 - DeWitt & Gray, **"Parallel Database Systems: The Future of High Performance Database Processing"** (1992)
 - Mohan et al., **"ARIES: A Transaction Recovery Method"** (1992)
+### Verified primary references for transaction semantics
+
+- [PostgreSQL: Transaction Isolation](https://www.postgresql.org/docs/current/transaction-iso.html) — default level, isolation anomalies, and snapshot behavior.
+- [MySQL InnoDB: Transaction Isolation Levels](https://dev.mysql.com/doc/refman/8.4/en/innodb-transaction-isolation-levels.html) — Repeatable Read and locking reads.
+- [MongoDB: Transactions](https://www.mongodb.com/docs/manual/core/transactions/) — cross-document ACID transaction scope.
+- [Microsoft Architecture Center: Saga Pattern](https://learn.microsoft.com/en-us/azure/architecture/patterns/saga) — cross-service compensation versus local atomicity.
+- [Gilbert & Lynch (2002)](https://doi.org/10.1145/564585.564601) — CAP theorem formalization.
+
 ### Online courses & video
  
 - **CMU 15-445 / 15-721 — Database Systems** (Andy Pavlo). Free, world-class. Lectures on YouTube. https://15445.courses.cs.cmu.edu/
@@ -1800,7 +1814,7 @@ An **object-relational mapping** library (SQLAlchemy, Django ORM, Hibernate, Ent
 - *"ACID isolation levels and anomalies."* Read PostgreSQL's explanation alongside MySQL's, then read Adya's PhD thesis on isolation if you really want depth.
 - *"Query optimization and the Selinger paper."* System R cost-based optimizer, foundational.
 - *"LSM trees."* Log-structured merge-trees, the storage engine behind RocksDB, Cassandra, LevelDB. Modern complement to B-trees.
-- *"Distributed consensus, Paxos and Raft."* For the CAP corner you need C and P together. Raft has a famously readable paper.
+- *"Distributed consensus, Paxos and Raft."* Read the original algorithms to understand ordering and fault tolerance; do not equate a consensus protocol alone with the whole CAP trade-off.
 - *"Vector databases and embeddings."* Newer trend (2022+) for AI/ML retrieval, e.g. Pinecone, pgvector, Milvus.
 - *"Graph algorithms in databases."* PageRank, shortest-path, community detection.
 ---
