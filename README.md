@@ -83,7 +83,7 @@ Each concept opens with an everyday-language overview, then technical detail wit
 | **Transaction manager** | ACID enforcement |
 | **Catalog (data dictionary)** | Directory of objects (tables, columns, indexes) |
 | **Log** | Append-only record of every insert/update/delete |
-| **Buffer manager** | Caches blocks in RAM (LRU eviction) |
+| **Buffer manager** | Caches blocks in RAM; eviction policy varies by DBMS |
  
 ---
  
@@ -171,7 +171,7 @@ LIMIT 10;
 | `RESTRICT` | Reject the change |
 | `CASCADE` | Propagate to FK |
 | `SET NULL` | Set FK columns to NULL |
-| `SET DEFAULT` | Set FK to its default |
+| `SET DEFAULT` | Set FK to its default (standard SQL; not supported by MySQL InnoDB/NDB) |
  
 ---
  
@@ -196,12 +196,14 @@ A `CHECK` is satisfied when expression is **TRUE or NULL**, violated only on FAL
 INNER  →  only matching rows (intersection)
 LEFT   →  all left rows + matching right (NULLs for unmatched)
 RIGHT  →  all right rows + matching left
-FULL   →  all rows from both (NULLs where no match)
+FULL   →  all rows from both (NULLs where no match; standard SQL, not supported by MySQL)
 CROSS  →  Cartesian product, no ON clause
 SELF   →  table joined to itself (use aliases)
 ```
  
 **Equijoin** uses `=`. **Non-equijoin** uses `<`, `>`, `<>`, etc. **UNION** stacks two compatible result sets (drops duplicates; `UNION ALL` keeps them).
+
+*MySQL note, verified against the MySQL 8.4 Reference Manual on 2026-11-18: MySQL supports `LEFT` and `RIGHT` outer joins, not `FULL OUTER JOIN`; `SET DEFAULT` is parsed but rejected by InnoDB and NDB.*
  
 ---
  
