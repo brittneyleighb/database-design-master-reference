@@ -31,6 +31,14 @@ For a first read, begin with **Part II** in this order: relational model → key
 
 ---
 
+## Try it safely
+
+**Predict:** what should happen before you act.  
+**Try:** use a local, reversible example.  
+**Explain:** describe the result in your own words.
+
+Choose a small real-world domain, such as a gym class booking or a coffee shop. List the facts it must remember, identify two relationships, and write one rule that must never be violated. Only then sketch tables or write SQL.
+
 ## Table of Contents
  
 ### Part I — Quick Reference Cheatsheet
