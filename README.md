@@ -9,6 +9,26 @@ This is synthesized from notes and concepts I worked through in graduate databas
 
 > **A note on sources.** Concepts covered are standard database fundamentals you'll find in any major textbook (Silberschatz/Korth, Ramakrishnan/Gehrke, Kleppmann) and across the linked official documentation. If you're using this and want to dig deeper into a topic, see Part IV for primary sources.
 
+## Start here: a database is a set of promises
+
+A database is not mainly a pile of tables. It is a system for keeping facts organized, connected, and trustworthy while many people or programs ask questions and make changes at the same time.
+
+Build this mental model before memorizing SQL:
+
+1. **Model facts:** decide what things exist, what they mean, and how they relate.
+2. **Protect truth:** use keys and constraints so invalid or contradictory data cannot quietly enter.
+3. **Ask questions:** use SQL to describe the result you want; the database chooses how to retrieve it.
+4. **Handle change safely:** transactions, concurrency control, and recovery keep changes from colliding or disappearing.
+
+For a first read, begin with **Part II** in this order: relational model → keys and constraints → joins → normalization → transactions. Use **Part I** afterward as a lookup reference when you are writing or debugging SQL.
+
+| If you need to… | Go to… |
+| --- | --- |
+| Turn a real-world idea into tables | Part II: Database Design, Keys, and Normalization |
+| Understand why a query returns unexpected rows | Part I: NULL Logic, Joins, and Aggregates |
+| Prevent bad data and broken relationships | Part I: Constraints and Referential Integrity |
+| Understand lost updates, locks, or rollbacks | Part II: Transactions, Concurrency Control, and Recovery |
+
 ---
 
 ## Table of Contents
