@@ -960,9 +960,11 @@ When two transactions each hold a lock the other needs, neither can proceed. Str
  
 - **Aggressive locking.** Grab everything upfront; wait if you can't.
 - **Data ordering.** Always acquire locks in a fixed global order (kills cycles by construction).
-- **Timeout.** If you wait too long, roll back.
+- **Timeout.** A lock wait can fail after a configured limit. The rollback scope depends on the database and configuration; for MySQL InnoDB, see the note below.
 - **Cycle detection.** Periodically check the wait-for graph and abort the cheapest victim.
-**Real-world scenario.** A bank has two ATM transactions running. Transaction A is transferring $100 from account X to Y. Transaction B is transferring $50 from Y to X. A locks X first, B locks Y first. Now A wants Y (held by B) and B wants X (held by A): deadlock. The database detects the cycle and kills the cheaper transaction (often the one that's done less work), rolls it back, and retries it. To the user, the transaction "took a moment longer." To the engineer, this is the routine reality of concurrent banking.
+**Real-world scenario.** Two transfers lock accounts in opposite orders: A holds X and waits for Y, while B holds Y and waits for X. With InnoDB deadlock detection enabled, the database chooses a victim and rolls back its entire transaction. The application receives an error and must decide whether to retry the whole transaction; a retry should be bounded and safe for the application's external effects.
+
+**MySQL InnoDB lock-wait timeout:** By default, a timeout rolls back only the waiting statement, so earlier changes in that transaction can remain pending. An application that needs all-or-nothing behavior should explicitly roll back the transaction before retrying the entire unit of work. Enabling the server option `innodb_rollback_on_timeout` changes the timeout behavior to roll back the whole transaction. A statement rollback does not necessarily release its locks. This differs from a detected deadlock, which rolls back the entire victim transaction. See [InnoDB error handling](https://dev.mysql.com/doc/refman/8.4/en/innodb-error-handling.html) and [deadlock detection](https://dev.mysql.com/doc/refman/8.4/en/innodb-deadlock-detection.html).
  
 ### Snapshot isolation, optimistic concurrency
  
@@ -1689,7 +1691,7 @@ An **object-relational mapping** library (SQLAlchemy, Django ORM, Hibernate, Ent
  
 **Tier:** Layer in a multi-tier architecture.
  
-**Timeout:** Lock-waiting cap; transaction rolled back on expiry.
+**Timeout:** A limit on waiting for a resource. Rollback scope varies: by default, an InnoDB row-lock wait timeout rolls back the waiting statement, not the whole transaction; see [InnoDB error handling](https://dev.mysql.com/doc/refman/8.4/en/innodb-error-handling.html).
  
 **Transaction:** A unit of work that commits or rolls back as a whole.
  
